@@ -1,17 +1,26 @@
 # Copyright (c) 2025, Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, Tri Dao, Siyu Wang, Shengbin Di, Yuxi Chi, Johnsonms, Linfeng Zheng, Haoyan Huang, Lanbo Li, Yun Zhong, Man Yuan, Minmin Sun, Yong Li, Wei Lin.
 
 import math
+import importlib.util
 import itertools
 import os
 import random
 import re
 import gc
+import sys
+import types
 from functools import wraps
+from pathlib import Path
 
 import pytest
 import torch
 
 from einops import rearrange, repeat
+
+if importlib.util.find_spec("flash_attn_2_cuda") is None:
+    flash_attn_pkg = types.ModuleType("flash_attn")
+    flash_attn_pkg.__path__ = [str(Path(__file__).resolve().parents[2] / "flash_attn")]
+    sys.modules.setdefault("flash_attn", flash_attn_pkg)
 
 try:
     from flash_attn.layers.rotary import apply_rotary_emb
@@ -61,6 +70,7 @@ IS_SM90 = torch.cuda.get_device_capability()[0] == 9
 IS_SM100 = torch.cuda.get_device_capability()[0] == 10
 TEST_BWD_ONLY = False
 VERBOSE = True
+FP8_FWD_DTYPES = [torch.float8_e4m3fn, torch.float8_e5m2]
 
 # @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float8_e4m3fn])
 @pytest.mark.parametrize("dtype", [torch.bfloat16])
@@ -435,6 +445,73 @@ def test_flash_attn_output(
             assert (dv - dv_ref).abs().max().item() <= rtol * (
                 dv_pt - dv_ref
             ).abs().max().item() + dv_atol
+
+
+@retry_on_oom
+@pytest.mark.parametrize("dtype", FP8_FWD_DTYPES)
+@pytest.mark.parametrize("causal", [False, True])
+def test_flash_attn_sm90_fp8_public_forward(dtype, causal):
+    if not IS_SM90:
+        pytest.skip("SM90-only FP8 forward coverage")
+    device = "cuda"
+    batch_size, seqlen_q, seqlen_k = 2, 128, 128
+    nheads, nheads_kv, d = 6, 3, 64
+    torch.random.manual_seed(0)
+    q_ref, k_ref, v_ref = [
+        torch.randn(shape, device=device, dtype=torch.bfloat16).to(dtype).to(torch.bfloat16)
+        for shape in (
+            (batch_size, seqlen_q, nheads, d),
+            (batch_size, seqlen_k, nheads_kv, d),
+            (batch_size, seqlen_k, nheads_kv, d),
+        )
+    ]
+    q, k, v = [x.to(dtype) for x in (q_ref, k_ref, v_ref)]
+    q_descale, k_descale, v_descale = [
+        torch.rand(batch_size, nheads_kv, device=device, dtype=torch.float32) * 2
+        for _ in range(3)
+    ]
+
+    out_ref, _ = attention_ref(
+        q_ref,
+        k_ref,
+        v_ref,
+        None,
+        None,
+        causal=causal,
+        q_descale=q_descale,
+        k_descale=k_descale,
+        v_descale=v_descale,
+    )
+    out_pt, _ = attention_ref(
+        q_ref,
+        k_ref,
+        v_ref,
+        None,
+        None,
+        causal=causal,
+        q_descale=q_descale,
+        k_descale=k_descale,
+        v_descale=v_descale,
+        upcast=False,
+        reorder_ops=True,
+        intermediate_dtype=dtype,
+    )
+    out, lse = flash_attn_func(
+        q,
+        k,
+        v,
+        causal=causal,
+        q_descale=q_descale,
+        k_descale=k_descale,
+        v_descale=v_descale,
+        return_lse=True,
+    )
+    assert out.dtype == torch.bfloat16
+    assert torch.isfinite(out.float()).all()
+    assert torch.isfinite(lse).all()
+    fwd_atol = 2 * (out_ref + 0.3 - 0.3 - out_ref).abs().max().item()
+    rtol = 4 if dtype == torch.float8_e5m2 else 3
+    assert (out - out_ref).abs().max().item() <= rtol * (out_pt - out_ref).abs().max().item() + fwd_atol
 
 
 # Regression test for #2591: SMEM overflow at small head_dims on SM100. The main
@@ -1006,6 +1083,86 @@ def test_flash_attn_varlen_output(
             assert (dv - dv_ref).abs().max().item() <= rtol * (
                 dv_pt - dv_ref
             ).abs().max().item() + dv_atol
+
+
+@retry_on_oom
+@pytest.mark.parametrize("dtype", FP8_FWD_DTYPES)
+def test_flash_attn_varlen_sm90_fp8_public_forward(dtype):
+    if not IS_SM90:
+        pytest.skip("SM90-only FP8 forward coverage")
+    device = "cuda"
+    batch_size, seqlen_q, seqlen_k = 4, 96, 128
+    nheads, nheads_kv, d = 6, 3, 64
+    torch.random.manual_seed(1)
+    q_ref, k_ref, v_ref = [
+        torch.randn(shape, device=device, dtype=torch.bfloat16).to(dtype).to(torch.bfloat16)
+        for shape in (
+            (batch_size, seqlen_q, nheads, d),
+            (batch_size, seqlen_k, nheads_kv, d),
+            (batch_size, seqlen_k, nheads_kv, d),
+        )
+    ]
+    query_padding_mask = generate_random_padding_mask(seqlen_q, batch_size, device, mode="random")
+    key_padding_mask = generate_random_padding_mask(seqlen_k, batch_size, device, mode="random")
+    (
+        q_unpad,
+        k_unpad,
+        v_unpad,
+        _qv_unpad,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        _seqused_q,
+        _seqused_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        _q,
+        _k,
+        _v,
+        _qv,
+        output_pad_fn,
+        _dq_pad_fn,
+        _dk_pad_fn,
+    ) = generate_qkv(
+        q_ref,
+        k_ref,
+        v_ref,
+        query_padding_mask,
+        key_padding_mask,
+        kvpacked=False,
+    )
+    q_descale, k_descale, v_descale = [
+        torch.rand(batch_size, nheads_kv, device=device, dtype=torch.float32) * 2
+        for _ in range(3)
+    ]
+    out_ref, _ = attention_ref(
+        q_ref,
+        k_ref,
+        v_ref,
+        query_padding_mask,
+        key_padding_mask,
+        q_descale=q_descale,
+        k_descale=k_descale,
+        v_descale=v_descale,
+    )
+    out_unpad, lse = flash_attn_varlen_func(
+        q_unpad.to(dtype),
+        k_unpad.to(dtype),
+        v_unpad.to(dtype),
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_k=max_seqlen_k,
+        q_descale=q_descale,
+        k_descale=k_descale,
+        v_descale=v_descale,
+        return_lse=True,
+    )
+    out = output_pad_fn(out_unpad)
+    assert out.dtype == torch.bfloat16
+    assert torch.isfinite(out.float()).all()
+    assert torch.isfinite(lse).all()
+    fwd_atol = 2 * (out_ref + 0.3 - 0.3 - out_ref).abs().max().item()
+    assert (out - out_ref).abs().max().item() <= 6 * fwd_atol + 0.2
 
 
 # @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float8_e4m3fn])

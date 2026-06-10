@@ -348,7 +348,9 @@ class FlashAttentionForwardBase:
         head_idx: Int32,
         batch_idx: Int32,
     ):
-        output_dtype = mO.element_type
+        output_dtype = self.output_dtype if hasattr(self, "output_dtype") else mO.element_type
+        if const_expr(hasattr(self, "is_fp8") and self.is_fp8):
+            utils.permute_output_fp8(acc_O)
         # store acc_O
         rO = cute.make_fragment_like(acc_O, output_dtype)
         rO.store(acc_O.load().to(output_dtype))

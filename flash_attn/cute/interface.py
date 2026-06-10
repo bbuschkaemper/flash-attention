@@ -1986,6 +1986,9 @@ class FlashAttnFunc(torch.autograd.Function):
         aux_scalars: Optional[tuple] = None,
         block_sparse_tensors: Optional[BlockSparseTensorsTorch] = None,
         block_sparse_tensors_bwd: Optional[BlockSparseTensorsTorch] = None,
+        q_descale: Optional[torch.Tensor] = None,
+        k_descale: Optional[torch.Tensor] = None,
+        v_descale: Optional[torch.Tensor] = None,
         return_lse: bool = False,
     ):
         aux_scalars = tuple(aux_scalars) if aux_scalars else None
@@ -2014,6 +2017,9 @@ class FlashAttnFunc(torch.autograd.Function):
             aux_tensors=aux_tensors,
             aux_scalars=aux_scalars,
             block_sparse_tensors=block_sparse_tensors,
+            q_descale=q_descale,
+            k_descale=k_descale,
+            v_descale=v_descale,
             return_lse=return_lse,
             gather_kv_indices=gather_kv_indices,
         )
@@ -2095,6 +2101,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         block_sparse_tensors: Optional[list] = None,
         aux_tensors: Optional[list] = None,
         aux_scalars: Optional[tuple] = None,
+        q_descale: Optional[torch.Tensor] = None,
+        k_descale: Optional[torch.Tensor] = None,
+        v_descale: Optional[torch.Tensor] = None,
         return_lse: bool = False,
     ):
         aux_scalars = tuple(aux_scalars) if aux_scalars else None
@@ -2131,6 +2140,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             block_sparse_tensors=block_sparse_tensors,
             aux_tensors=aux_tensors,
             aux_scalars=aux_scalars,
+            q_descale=q_descale,
+            k_descale=k_descale,
+            v_descale=v_descale,
             return_lse=return_lse,
             gather_kv_indices=gather_kv_indices,
         )
@@ -2220,6 +2232,9 @@ def flash_attn_func(
     aux_scalars: Optional[tuple] = None,
     block_sparse_tensors: Optional[BlockSparseTensorsTorch] = None,
     block_sparse_tensors_bwd: Optional[BlockSparseTensorsTorch] = None,
+    q_descale: Optional[torch.Tensor] = None,
+    k_descale: Optional[torch.Tensor] = None,
+    v_descale: Optional[torch.Tensor] = None,
     return_lse: bool = False,
 ):
     return FlashAttnFunc.apply(
@@ -2243,6 +2258,9 @@ def flash_attn_func(
         aux_scalars,
         block_sparse_tensors,
         block_sparse_tensors_bwd,
+        q_descale,
+        k_descale,
+        v_descale,
         return_lse,
     )
 
@@ -2275,6 +2293,9 @@ def flash_attn_varlen_func(
     block_sparse_tensors: Optional[BlockSparseTensorsTorch] = None,
     aux_tensors: Optional[list] = None,
     aux_scalars: Optional[tuple] = None,
+    q_descale: Optional[torch.Tensor] = None,
+    k_descale: Optional[torch.Tensor] = None,
+    v_descale: Optional[torch.Tensor] = None,
     return_lse: bool = False,
 ):
     """
@@ -2336,6 +2357,9 @@ def flash_attn_varlen_func(
         block_sparse_tensors,
         aux_tensors,
         aux_scalars,
+        q_descale,
+        k_descale,
+        v_descale,
         return_lse,
     )
 

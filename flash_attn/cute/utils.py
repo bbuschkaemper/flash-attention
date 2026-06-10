@@ -26,6 +26,36 @@ class AuxData(NamedTuple):
     tensors: tuple | list | None = None
     scalars: tuple | None = None
 
+    def __extract_mlir_values__(self):
+        values = []
+        if self.tensors is not None:
+            for tensor in self.tensors:
+                values.extend(cutlass.extract_mlir_values(tensor))
+        if self.scalars is not None:
+            for scalar in self.scalars:
+                values.extend(cutlass.extract_mlir_values(scalar))
+        return values
+
+    def __new_from_mlir_values__(self, values):
+        idx = 0
+        tensors = None
+        if self.tensors is not None:
+            tensors = []
+            for tensor in self.tensors:
+                n_items = len(cutlass.extract_mlir_values(tensor))
+                tensors.append(cutlass.new_from_mlir_values(tensor, values[idx: idx + n_items]))
+                idx += n_items
+            tensors = tuple(tensors) if isinstance(self.tensors, tuple) else list(tensors)
+        scalars = None
+        if self.scalars is not None:
+            scalars = []
+            for scalar in self.scalars:
+                n_items = len(cutlass.extract_mlir_values(scalar))
+                scalars.append(cutlass.new_from_mlir_values(scalar, values[idx: idx + n_items]))
+                idx += n_items
+            scalars = tuple(scalars)
+        return AuxData(tensors=tensors, scalars=scalars)
+
 
 @cute.jit
 def permute_Cregs_fp8(frag: cute.Tensor) -> None:
@@ -36,6 +66,18 @@ def permute_Cregs_fp8(frag: cute.Tensor) -> None:
             tmp = frag_64b[(0, 1, 2 * i), mi]
             frag_64b[(0, 1, 2 * i), mi] = frag_64b[(0, 0, 2 * i + 1), mi]
             frag_64b[(0, 0, 2 * i + 1), mi] = tmp
+
+
+@cute.jit
+def permute_output_fp8(frag: cute.Tensor) -> None:
+    """Reorder SM90 FP8 PV accumulators back into output register order."""
+    frag = cute.group_modes(frag, 1, 3)
+    for mi in cutlass.range_constexpr(cute.size(frag.shape[1])):
+        for j in cutlass.range_constexpr(cute.size(frag.shape[0][1])):
+            for i in cutlass.range_constexpr(cute.size(frag.shape[0][2]) // 2):
+                tmp = frag[(1, j, 2 * i), mi]
+                frag[(1, j, 2 * i), mi] = frag[(0, j, 2 * i + 1), mi]
+                frag[(0, j, 2 * i + 1), mi] = tmp
 
 
 # Obtained from sollya:

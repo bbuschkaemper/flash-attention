@@ -613,7 +613,9 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
         if const_expr(sP_layout is not None):
             sP = storage.sP.get_tensor(sP_layout.outer, swizzle=sP_layout.inner)
         # reuse sQ's data iterator
-        sO = storage.sO.get_tensor(sO_layout.outer, swizzle=sO_layout.inner, dtype=mO.element_type)
+        sO = storage.sO.get_tensor(
+            sO_layout.outer, swizzle=sO_layout.inner, dtype=self.output_dtype
+        )
 
         block_info = BlockInfo(
             self.tile_m,
