@@ -504,7 +504,9 @@ def _flash_attn_fwd(
 
     dtype = torch2cute_dtype_map[q_dtype]
     if is_fp8:
-        assert arch // 10 == 10, "FP8 is only supported on SM100 (compute capability 10.x) for FA4 CuTe."
+        assert arch // 10 in [9, 10], (
+            "FP8 is only supported on SM90/SM100 (compute capability 9.x/10.x) for FA4 CuTe."
+        )
     use_block_sparsity = block_sparse_tensors is not None
 
     causal, local, window_size_left, window_size_right = _resolve_causal_local_window(
@@ -848,6 +850,7 @@ def _flash_attn_fwd(
                 head_dim,
                 head_dim_v,
                 qhead_per_kvhead,
+                out_dtype=o_tensor.element_type,
                 is_causal=causal,
                 is_local=local,
                 pack_gqa=pack_gqa,
@@ -1010,7 +1013,7 @@ def _flash_attn_fwd(
                 window_size_right,
                 learnable_sink_tensor,
             ]
-            if arch // 10 in [10, 11]:
+            if arch // 10 in [9, 10, 11]:
                 compile_args.append(descale_tensors_tensor)
             compile_args.extend([
                 sparse_tensors,
@@ -1074,7 +1077,7 @@ def _flash_attn_fwd(
                 window_size_right,
                 learnable_sink,
             ]
-            if arch // 10 in [10, 11]:
+            if arch // 10 in [9, 10, 11]:
                 call_args.append(descale_tensors)
             call_args.extend([
                 (

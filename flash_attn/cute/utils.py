@@ -27,6 +27,17 @@ class AuxData(NamedTuple):
     scalars: tuple | None = None
 
 
+@cute.jit
+def permute_Cregs_fp8(frag: cute.Tensor) -> None:
+    """Reorder SM90 accumulator fragments for FP8 back-to-back WGMMA."""
+    frag_64b = cute.group_modes(cute.recast_tensor(frag, cutlass.Int64), 1, 3)
+    for mi in cutlass.range_constexpr(cute.size(frag_64b.shape[1])):
+        for i in cutlass.range_constexpr(cute.size(frag_64b.shape[0][2]) // 2):
+            tmp = frag_64b[(0, 1, 2 * i), mi]
+            frag_64b[(0, 1, 2 * i), mi] = frag_64b[(0, 0, 2 * i + 1), mi]
+            frag_64b[(0, 0, 2 * i + 1), mi] = tmp
+
+
 # Obtained from sollya:
 # fpminimax(exp(x * log(2.0)), 1, [|1,24...|],[0;1],relative);
 POLY_EX2 = {
